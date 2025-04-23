@@ -14,61 +14,34 @@ app.use(express.json());
 // Set up authentication
 const API_KEY = process.env.API_KEY || 'your-default-secret-key';
 
-// Health check endpoint
+// Health check endpoint that also shows yt-dlp version
 app.get('/', (req, res) => {
-  res.send('YT-DLP API is running');
+  exec('yt-dlp --version', (error, stdout, stderr) => {
+    if (error) {
+      return res.send(`YT-DLP API is running, but yt-dlp check failed: ${error.message}`);
+    }
+    return res.send(`YT-DLP API is running. yt-dlp version: ${stdout.trim()}`);
+  });
 });
 
-// Helper function to sleep
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Function to execute yt-dlp with retry logic
-async function executeYtDlp(command, maxRetries = 3) {
-  let retries = 0;
-  
-  while (retries < maxRetries) {
-    try {
-      return await new Promise((resolve, reject) => {
-        exec(command, (error, stdout, stderr) => {
-          if (error) {
-            // Check if error is due to rate limiting
-            if (stderr && stderr.includes('429: Too Many Requests')) {
-              // Don't reject immediately, let the retry logic handle it
-              return reject({ isRateLimit: true, error, stderr });
-            }
-            return reject({ error, stderr });
-          }
-          resolve({ stdout, stderr });
-        });
+// Endpoint to test basic yt-dlp functionality
+app.get('/test-ytdlp', (req, res) => {
+  exec('yt-dlp --help', (error, stdout, stderr) => {
+    if (error) {
+      return res.status(500).json({
+        error: 'yt-dlp test failed',
+        details: error.message
       });
-    } catch (err) {
-      retries++;
-      console.log(`Attempt ${retries}/${maxRetries} failed.`);
-      
-      if (err.isRateLimit) {
-        // Exponential backoff - wait longer with each retry
-        const waitTime = 2000 * Math.pow(2, retries); // 2s, 4s, 8s
-        console.log(`Rate limited. Waiting ${waitTime}ms before retry...`);
-        await sleep(waitTime);
-      } else if (retries >= maxRetries) {
-        // If we've used all retries and it's not a rate limit issue, throw the error
-        throw err;
-      } else {
-        // For other types of errors, wait a bit before retrying
-        await sleep(1000);
-      }
     }
-  }
-  
-  throw new Error('Maximum retries exceeded');
-}
+    return res.json({
+      success: true,
+      message: 'yt-dlp is working',
+      help_excerpt: stdout.substring(0, 500) + '...'
+    });
+  });
+});
 
-// Function to check if a URL is accessible
-function isYouTubeVideo(url) {
-  return url.includes('youtube.com') || url.includes('youtu.be');
-}
-
-app.post('/extract-audio', async (req, res) => {
+app.post('/extract-audio', (req, res) => {
   // Verify API key
   const providedKey = req.headers['x-api-key'];
   if (providedKey !== API_KEY) {
@@ -81,88 +54,68 @@ app.post('/extract-audio', async (req, res) => {
     return res.status(400).json({ error: 'No video URL provided' });
   }
 
+  // Log the request details for debugging
+  console.log(`Processing URL: ${videoUrl}`);
+  
   // Create unique filename
   const timestamp = Date.now();
   const outputFile = `audio_${timestamp}.mp3`;
   const outputPath = path.join('/tmp', outputFile);
   
-  console.log(`Processing URL: ${videoUrl}`);
+  // Let's first test with a simple command that doesn't do extraction
+  // We just want to get info about the video to verify connectivity
+  const infoCommand = `yt-dlp --dump-json "${videoUrl}"`;
   
-  // Enhanced options for yt-dlp to bypass restrictions
-  // These options help avoid region restrictions, age restrictions, and more
-  const ytDlpOptions = [
-    '-x', 
-    '--audio-format', 'mp3',
-    '--audio-quality', '0',
-    '--force-ipv4',
-    '--no-warnings',
-    '--prefer-insecure',
-    '--no-check-certificates',
-    '--geo-bypass',
-    '--add-header', 'Accept-Language:en-US,en;q=0.9',
-    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36',
-    '--extractor-args', 'youtube:player_client=android',
-    '--extractor-retries', '10',
-    '--socket-timeout', '30'
-  ];
+  console.log(`Running info command: ${infoCommand}`);
   
-  if (isYouTubeVideo(videoUrl)) {
-    ytDlpOptions.push('--extractor-args');
-    ytDlpOptions.push('youtube:skip=dash');
-  }
-  
-  // Join all options into a command string
-  const optionsString = ytDlpOptions.join(' ');
-  const command = `yt-dlp ${optionsString} -o "${outputPath}" "${videoUrl}"`;
-  
-  try {
-    const { stdout, stderr } = await executeYtDlp(command);
-    
-    if (stderr) {
-      console.warn(`Warnings: ${stderr}`);
-    }
-    
-    console.log(`Success: ${stdout}`);
-    
-    // Read the file and send it back
-    try {
-      const fileData = fs.readFileSync(outputPath);
-      const base64Data = fileData.toString('base64');
-      
-      // Clean up
-      fs.unlinkSync(outputPath);
-      
-      return res.json({ 
-        success: true, 
-        audioBase64: base64Data,
-        filename: `audio_${timestamp}.mp3`,
-        message: 'Audio extraction successful'
-      });
-    } catch (fileError) {
-      console.error(`File error: ${fileError}`);
-      return res.status(500).json({ error: 'Failed to read audio file' });
-    }
-  } catch (err) {
-    console.error(`Error: ${err.error ? err.error.message : err.message}`);
-    console.error(`Details: ${err.stderr || ''}`);
-    
-    if (err.stderr && err.stderr.includes('content isn\'t available')) {
-      return res.status(404).json({ 
-        error: 'Video content not available. This video may be private, deleted, or region-restricted.',
-        details: err.stderr || '' 
-      });
-    } else if (err.stderr && err.stderr.includes('429: Too Many Requests')) {
-      return res.status(429).json({ 
-        error: 'YouTube rate limit exceeded. Please try again later.',
-        details: err.stderr || ''
-      });
-    } else {
+  exec(infoCommand, (infoError, infoStdout, infoStderr) => {
+    if (infoError) {
+      console.error(`Info error: ${infoError.message}`);
+      console.error(`Info stderr: ${infoStderr}`);
       return res.status(500).json({ 
-        error: 'Failed to extract audio',
-        details: err.stderr || err.message
+        error: 'Failed to get video info',
+        details: infoStderr || infoError.message
       });
     }
-  }
+    
+    console.log(`Info succeeded, now extracting audio`);
+    
+    // Now attempt the actual extraction
+    const extractCommand = `yt-dlp -x --audio-format mp3 -o "${outputPath}" "${videoUrl}"`;
+    console.log(`Running extract command: ${extractCommand}`);
+    
+    exec(extractCommand, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Extract error: ${error.message}`);
+        console.error(`Extract stderr: ${stderr}`);
+        return res.status(500).json({ 
+          error: 'Failed to extract audio',
+          details: stderr || error.message
+        });
+      }
+      
+      console.log(`Extract stdout: ${stdout}`);
+      
+      // Read the file and send it back
+      try {
+        const fileData = fs.readFileSync(outputPath);
+        const base64Data = fileData.toString('base64');
+        
+        // Clean up
+        fs.unlinkSync(outputPath);
+        
+        return res.json({ 
+          success: true, 
+          audioBase64: base64Data,
+          filename: `audio_${timestamp}.mp3`,
+          message: 'Audio extraction successful'
+        });
+      } catch (fileError) {
+        console.error(`File error: ${fileError}`);
+        return res.status(500).json({ error: 'Failed to read audio file' });
+      }
+    });
+  });
 });
 
 app.listen(port, () => {
