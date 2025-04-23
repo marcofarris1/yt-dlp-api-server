@@ -1,28 +1,21 @@
-FROM node:16
+FROM node:16-alpine
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Install required dependencies
+RUN apk add --no-cache python3 py3-pip ffmpeg
 
-# Install yt-dlp using pip
+# Install yt-dlp via pip
 RUN pip3 install yt-dlp
 
 WORKDIR /app
 
-# Copy package.json and remove the postinstall script
-COPY package.json ./
-RUN sed -i '/postinstall/d' package.json
+# Copy only what we need
+COPY package.json .
+COPY server.js .
 
-# Install dependencies
-RUN npm install
+# Install Node.js dependencies
+RUN npm install --production
 
-# Copy source code
-COPY server.js ./
-
-# Set up environment
+# Expose the port
 EXPOSE 3000
 
 # Start the application
