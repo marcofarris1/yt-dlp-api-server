@@ -1,19 +1,20 @@
-FROM node:16-slim
+FROM node:16-bullseye
 
-# Install required dependencies
+# Install required dependencies with Python 3.9+
 RUN apt-get update && apt-get install -y \
     python3 \
+    python3-pip \
     curl \
     ffmpeg \
-    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Verify Python version
+RUN python3 --version
 
 WORKDIR /app
 
-# Install yt-dlp directly (more reliable than the script)
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp \
-    && yt-dlp --version
+# Install yt-dlp using pip (more reliable method)
+RUN pip3 install yt-dlp
 
 # Copy package files
 COPY package*.json ./
@@ -23,6 +24,9 @@ RUN npm install
 
 # Copy the rest of the application
 COPY . .
+
+# Update the server.js to use the correct yt-dlp path
+RUN sed -i 's/\.\/yt-dlp/yt-dlp/g' server.js
 
 # Set up environment
 EXPOSE 3000
