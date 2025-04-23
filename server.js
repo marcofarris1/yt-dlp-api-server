@@ -40,7 +40,7 @@ app.post('/extract-audio', (req, res) => {
   console.log(`Processing ${platform || 'unknown'} URL: ${videoUrl}`);
   
   // Execute yt-dlp command
-  const command = `./yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${outputPath}" "${videoUrl}"`;
+  const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${outputPath}" "${videoUrl}"`;
   
   exec(command, (error, stdout, stderr) => {
     if (error) {
