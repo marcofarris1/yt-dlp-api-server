@@ -1,0 +1,17 @@
+{
+    "name": "yt-dlp-api",
+    "version": "1.0.0",
+    "main": "server.js",
+    "dependencies": {
+      "express": "^4.18.2",
+      "cors": "^2.8.5",
+      "dotenv": "^16.0.3"
+    },
+    "scripts": {
+      "start": "node server.js",
+      "postinstall": "chmod +x ./install-yt-dlp.sh && ./install-yt-dlp.sh"
+    },
+    "engines": {
+      "node": "16.x"
+    }
+  }
