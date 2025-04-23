@@ -14,31 +14,9 @@ app.use(express.json());
 // Set up authentication
 const API_KEY = process.env.API_KEY || 'your-default-secret-key';
 
-// Health check endpoint that also shows yt-dlp version
+// Simple health check endpoint
 app.get('/', (req, res) => {
-  exec('yt-dlp --version', (error, stdout, stderr) => {
-    if (error) {
-      return res.send(`YT-DLP API is running, but yt-dlp check failed: ${error.message}`);
-    }
-    return res.send(`YT-DLP API is running. yt-dlp version: ${stdout.trim()}`);
-  });
-});
-
-// Endpoint to test basic yt-dlp functionality
-app.get('/test-ytdlp', (req, res) => {
-  exec('yt-dlp --help', (error, stdout, stderr) => {
-    if (error) {
-      return res.status(500).json({
-        error: 'yt-dlp test failed',
-        details: error.message
-      });
-    }
-    return res.json({
-      success: true,
-      message: 'yt-dlp is working',
-      help_excerpt: stdout.substring(0, 500) + '...'
-    });
-  });
+  res.send('YT-DLP API is running');
 });
 
 app.post('/extract-audio', (req, res) => {
@@ -54,67 +32,46 @@ app.post('/extract-audio', (req, res) => {
     return res.status(400).json({ error: 'No video URL provided' });
   }
 
-  // Log the request details for debugging
-  console.log(`Processing URL: ${videoUrl}`);
-  
   // Create unique filename
   const timestamp = Date.now();
   const outputFile = `audio_${timestamp}.mp3`;
   const outputPath = path.join('/tmp', outputFile);
   
-  // Let's first test with a simple command that doesn't do extraction
-  // We just want to get info about the video to verify connectivity
-  const infoCommand = `yt-dlp --dump-json "${videoUrl}"`;
+  console.log(`Processing URL: ${videoUrl}`);
   
-  console.log(`Running info command: ${infoCommand}`);
+  // Very simple command with minimal options to reduce memory usage
+  const command = `yt-dlp -x --audio-format mp3 -o "${outputPath}" "${videoUrl}"`;
   
-  exec(infoCommand, (infoError, infoStdout, infoStderr) => {
-    if (infoError) {
-      console.error(`Info error: ${infoError.message}`);
-      console.error(`Info stderr: ${infoStderr}`);
+  exec(command, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error: ${error.message}`);
       return res.status(500).json({ 
-        error: 'Failed to get video info',
-        details: infoStderr || infoError.message
+        error: 'Failed to extract audio',
+        details: stderr || error.message
       });
     }
     
-    console.log(`Info succeeded, now extracting audio`);
-    
-    // Now attempt the actual extraction
-    const extractCommand = `yt-dlp -x --audio-format mp3 -o "${outputPath}" "${videoUrl}"`;
-    console.log(`Running extract command: ${extractCommand}`);
-    
-    exec(extractCommand, (error, stdout, stderr) => {
-      if (error) {
-        console.error(`Extract error: ${error.message}`);
-        console.error(`Extract stderr: ${stderr}`);
-        return res.status(500).json({ 
-          error: 'Failed to extract audio',
-          details: stderr || error.message
-        });
-      }
+    // Read the file and send it back
+    try {
+      const fileData = fs.readFileSync(outputPath);
+      const base64Data = fileData.toString('base64');
       
-      console.log(`Extract stdout: ${stdout}`);
+      // Clean up
+      fs.unlinkSync(outputPath);
       
-      // Read the file and send it back
-      try {
-        const fileData = fs.readFileSync(outputPath);
-        const base64Data = fileData.toString('base64');
-        
-        // Clean up
-        fs.unlinkSync(outputPath);
-        
-        return res.json({ 
-          success: true, 
-          audioBase64: base64Data,
-          filename: `audio_${timestamp}.mp3`,
-          message: 'Audio extraction successful'
-        });
-      } catch (fileError) {
-        console.error(`File error: ${fileError}`);
-        return res.status(500).json({ error: 'Failed to read audio file' });
-      }
-    });
+      return res.json({ 
+        success: true, 
+        audioBase64: base64Data,
+        filename: `audio_${timestamp}.mp3`,
+        message: 'Audio extraction successful'
+      });
+    } catch (fileError) {
+      console.error(`File error: ${fileError.message}`);
+      return res.status(500).json({ 
+        error: 'Failed to read audio file',
+        details: fileError.message
+      });
+    }
   });
 });
 
