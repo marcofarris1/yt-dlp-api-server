@@ -19,14 +19,58 @@ app.get('/', (req, res) => {
   res.send('YT-DLP API is running');
 });
 
-app.post('/extract-audio', (req, res) => {
+// Helper function to sleep
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Function to execute yt-dlp with retry logic
+async function executeYtDlp(command, maxRetries = 3) {
+  let retries = 0;
+  
+  while (retries < maxRetries) {
+    try {
+      return await new Promise((resolve, reject) => {
+        exec(command, (error, stdout, stderr) => {
+          if (error) {
+            // Check if error is due to rate limiting
+            if (stderr && stderr.includes('429: Too Many Requests')) {
+              // Don't reject immediately, let the retry logic handle it
+              return reject({ isRateLimit: true, error, stderr });
+            }
+            return reject({ error, stderr });
+          }
+          resolve({ stdout, stderr });
+        });
+      });
+    } catch (err) {
+      retries++;
+      console.log(`Attempt ${retries}/${maxRetries} failed.`);
+      
+      if (err.isRateLimit) {
+        // Exponential backoff - wait longer with each retry
+        const waitTime = 2000 * Math.pow(2, retries); // 2s, 4s, 8s
+        console.log(`Rate limited. Waiting ${waitTime}ms before retry...`);
+        await sleep(waitTime);
+      } else if (retries >= maxRetries) {
+        // If we've used all retries and it's not a rate limit issue, throw the error
+        throw err;
+      } else {
+        // For other types of errors, wait a bit before retrying
+        await sleep(1000);
+      }
+    }
+  }
+  
+  throw new Error('Maximum retries exceeded');
+}
+
+app.post('/extract-audio', async (req, res) => {
   // Verify API key
   const providedKey = req.headers['x-api-key'];
   if (providedKey !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const { videoUrl, platform } = req.body;
+  const { videoUrl } = req.body;
   
   if (!videoUrl) {
     return res.status(400).json({ error: 'No video URL provided' });
@@ -37,22 +81,19 @@ app.post('/extract-audio', (req, res) => {
   const outputFile = `audio_${timestamp}.mp3`;
   const outputPath = path.join('/tmp', outputFile);
   
-  console.log(`Processing ${platform || 'unknown'} URL: ${videoUrl}`);
+  console.log(`Processing URL: ${videoUrl}`);
   
-  // Execute yt-dlp command
-  const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 -o "${outputPath}" "${videoUrl}"`;
+  // Add extra options to help with rate limiting
+  const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 --force-ipv4 --no-warnings -o "${outputPath}" "${videoUrl}"`;
   
-  exec(command, (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Error: ${error.message}`);
-      return res.status(500).json({ error: error.message });
-    }
+  try {
+    const { stdout, stderr } = await executeYtDlp(command);
     
     if (stderr) {
-      console.error(`stderr: ${stderr}`);
+      console.warn(`Warnings: ${stderr}`);
     }
     
-    console.log(`stdout: ${stdout}`);
+    console.log(`Success: ${stdout}`);
     
     // Read the file and send it back
     try {
@@ -72,7 +113,25 @@ app.post('/extract-audio', (req, res) => {
       console.error(`File error: ${fileError}`);
       return res.status(500).json({ error: 'Failed to read audio file' });
     }
-  });
+  } catch (err) {
+    console.error(`Error: ${err.error ? err.error.message : err.message}`);
+    console.error(`Details: ${err.stderr || ''}`);
+    
+    if (err.stderr && err.stderr.includes('This content isn\'t available')) {
+      return res.status(404).json({ 
+        error: 'Video content not available. Please try a different video.' 
+      });
+    } else if (err.stderr && err.stderr.includes('429: Too Many Requests')) {
+      return res.status(429).json({ 
+        error: 'YouTube rate limit exceeded. Please try again later.' 
+      });
+    } else {
+      return res.status(500).json({ 
+        error: 'Failed to extract audio',
+        details: err.stderr || err.message
+      });
+    }
+  }
 });
 
 app.listen(port, () => {
