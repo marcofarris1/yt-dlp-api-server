@@ -63,6 +63,11 @@ async function executeYtDlp(command, maxRetries = 3) {
   throw new Error('Maximum retries exceeded');
 }
 
+// Function to check if a URL is accessible
+function isYouTubeVideo(url) {
+  return url.includes('youtube.com') || url.includes('youtu.be');
+}
+
 app.post('/extract-audio', async (req, res) => {
   // Verify API key
   const providedKey = req.headers['x-api-key'];
@@ -83,8 +88,32 @@ app.post('/extract-audio', async (req, res) => {
   
   console.log(`Processing URL: ${videoUrl}`);
   
-  // Add extra options to help with rate limiting
-  const command = `yt-dlp -x --audio-format mp3 --audio-quality 0 --force-ipv4 --no-warnings -o "${outputPath}" "${videoUrl}"`;
+  // Enhanced options for yt-dlp to bypass restrictions
+  // These options help avoid region restrictions, age restrictions, and more
+  const ytDlpOptions = [
+    '-x', 
+    '--audio-format', 'mp3',
+    '--audio-quality', '0',
+    '--force-ipv4',
+    '--no-warnings',
+    '--prefer-insecure',
+    '--no-check-certificates',
+    '--geo-bypass',
+    '--add-header', 'Accept-Language:en-US,en;q=0.9',
+    '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36',
+    '--extractor-args', 'youtube:player_client=android',
+    '--extractor-retries', '10',
+    '--socket-timeout', '30'
+  ];
+  
+  if (isYouTubeVideo(videoUrl)) {
+    ytDlpOptions.push('--extractor-args');
+    ytDlpOptions.push('youtube:skip=dash');
+  }
+  
+  // Join all options into a command string
+  const optionsString = ytDlpOptions.join(' ');
+  const command = `yt-dlp ${optionsString} -o "${outputPath}" "${videoUrl}"`;
   
   try {
     const { stdout, stderr } = await executeYtDlp(command);
@@ -117,13 +146,15 @@ app.post('/extract-audio', async (req, res) => {
     console.error(`Error: ${err.error ? err.error.message : err.message}`);
     console.error(`Details: ${err.stderr || ''}`);
     
-    if (err.stderr && err.stderr.includes('This content isn\'t available')) {
+    if (err.stderr && err.stderr.includes('content isn\'t available')) {
       return res.status(404).json({ 
-        error: 'Video content not available. Please try a different video.' 
+        error: 'Video content not available. This video may be private, deleted, or region-restricted.',
+        details: err.stderr || '' 
       });
     } else if (err.stderr && err.stderr.includes('429: Too Many Requests')) {
       return res.status(429).json({ 
-        error: 'YouTube rate limit exceeded. Please try again later.' 
+        error: 'YouTube rate limit exceeded. Please try again later.',
+        details: err.stderr || ''
       });
     } else {
       return res.status(500).json({ 
